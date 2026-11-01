@@ -1,22 +1,17 @@
-import type { Guess } from "./game";
+import type { Mode, Run } from "./game";
 
-export interface Stats {
-  played: number;
-  wins: number;
-  streak: number;
-  maxStreak: number;
-  lastPlayed: number; // puzzle number of the last finished game
-  lastWon: number;
-  /** distribution[i] = wins on attempt i+1 */
-  distribution: number[];
-}
-
-const EMPTY_STATS: Stats = { played: 0, wins: 0, streak: 0, maxStreak: 0, lastPlayed: 0, lastWon: 0, distribution: [0, 0, 0, 0, 0, 0] };
+const KEY = {
+  run: (m: Mode) => `noisle:v2:run:${m}`,
+  stats: "noisle:v2:stats",
+  dex: "noisle:v2:dex",
+  bag: "noisle:v2:bag",
+  help: "noisle:v2:help",
+};
 
 function read<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback;
+    return raw ? (JSON.parse(raw) as T) : fallback;
   } catch {
     return fallback;
   }
@@ -24,41 +19,51 @@ function read<T>(key: string, fallback: T): T {
 
 function write(key: string, value: unknown) {
   try {
-    localStorage.setItem(key, JSON.stringify(value));
+    if (value === undefined) localStorage.removeItem(key);
+    else localStorage.setItem(key, JSON.stringify(value));
   } catch {
-    /* private mode / storage full: the game still works, it just won't remember */
+    /* private mode or full storage: the game still works, it just won't remember */
   }
 }
 
-export const loadGuesses = (n: number): Guess[] => read<{ g: Guess[] }>(`noisle:day:${n}`, { g: [] }).g;
-export const saveGuesses = (n: number, g: Guess[]) => write(`noisle:day:${n}`, { g });
+// ---- runs in progress ----
+export const loadRun = (mode: Mode): Run | null => {
+  const r = read<Run | null>(KEY.run(mode), null);
+  return r && Array.isArray(r.rounds) && r.rounds.length > 0 ? r : null;
+};
+export const saveRun = (run: Run) => write(KEY.run(run.mode), run);
+export const clearRun = (mode: Mode) => write(KEY.run(mode), undefined);
 
-export function loadStats(today: number): Stats {
-  const s = read("noisle:stats", EMPTY_STATS);
-  // a streak breaks if you missed yesterday's puzzle
-  if (s.lastWon < today - 1) s.streak = 0;
-  return s;
+// ---- stats ----
+export interface Stats {
+  classic: { games: number; best: number; total: number; /** solves on try 1..6, then misses */ dist: number[] };
+  survival: { runs: number; best: number; bestScore: number };
+  recorded: string[]; // run ids already counted
 }
 
-/** Records a finished game exactly once per puzzle. */
-export function recordResult(n: number, won: boolean, tries: number): Stats {
-  const s = read("noisle:stats", EMPTY_STATS);
-  if (s.lastPlayed >= n) return loadStats(n);
-  s.played++;
-  s.lastPlayed = n;
-  if (won) {
-    s.wins++;
-    s.streak = s.lastWon === n - 1 ? s.streak + 1 : 1;
-    s.maxStreak = Math.max(s.maxStreak, s.streak);
-    s.lastWon = n;
-    s.distribution = [...s.distribution];
-    s.distribution[tries - 1]++;
-  } else {
-    s.streak = 0;
-  }
-  write("noisle:stats", s);
-  return s;
-}
+export const EMPTY_STATS: Stats = {
+  classic: { games: 0, best: 0, total: 0, dist: [0, 0, 0, 0, 0, 0, 0] },
+  survival: { runs: 0, best: 0, bestScore: 0 },
+  recorded: [],
+};
 
-export const hasSeenHelp = () => read("noisle:help", { seen: false }).seen;
-export const markHelpSeen = () => write("noisle:help", { seen: true });
+export const loadStats = (): Stats => {
+  const s = read<Partial<Stats>>(KEY.stats, {});
+  return {
+    classic: { ...EMPTY_STATS.classic, ...s.classic },
+    survival: { ...EMPTY_STATS.survival, ...s.survival },
+    recorded: s.recorded ?? [],
+  };
+};
+export const saveStats = (s: Stats) => write(KEY.stats, s);
+
+// ---- sound dex ----
+export type Dex = Record<string, { found: number }>;
+export const loadDex = (): Dex => read<Dex>(KEY.dex, {});
+export const saveDex = (d: Dex) => write(KEY.dex, d);
+
+// ---- misc ----
+export const loadBag = (): string[] => read<string[]>(KEY.bag, []);
+export const saveBag = (b: string[]) => write(KEY.bag, b);
+export const hasSeenHelp = () => read(KEY.help, false);
+export const markHelpSeen = () => write(KEY.help, true);

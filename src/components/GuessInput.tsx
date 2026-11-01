@@ -1,106 +1,93 @@
-import { useMemo, useRef, useState } from "react";
-import { OPTIONS } from "../data/sounds";
-import { normalize } from "../lib/game";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import type { GuessResult } from "../lib/game";
+import { isMeaningful } from "../lib/match";
 
 interface Props {
-  onGuess: (text: string) => void;
+  onGuess: (text: string) => GuessResult;
   onSkip: () => void;
   skipLabel: string;
-  used: string[];
+  /** Changes every round so the field resets and refocuses. */
+  roundKey: string;
 }
 
-export function GuessInput({ onGuess, onSkip, skipLabel, used }: Props) {
+type Feedback = { tone: "close" | "wrong" | "info"; text: string } | null;
+
+const CLOSE_LINES = ["Close! You're on the right track.", "Warmer… be more specific.", "Almost! Related, but not it."];
+const WRONG_LINES = ["Not it. Listen again.", "Nope. More audio unlocked.", "Not quite. Try another angle."];
+const pick = (arr: string[], n: number) => arr[n % arr.length];
+
+const finePointer = () => matchMedia("(pointer: fine)").matches;
+
+export function GuessInput({ onGuess, onSkip, skipLabel, roundKey }: Props) {
   const [text, setText] = useState("");
-  const [active, setActive] = useState(0);
-  const [open, setOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [feedback, setFeedback] = useState<Feedback>(null);
+  const [shake, setShake] = useState(0);
+  const input = useRef<HTMLInputElement>(null);
+  const count = useRef(0);
 
-  const matches = useMemo(() => {
-    const q = normalize(text);
-    if (!q) return [];
-    const usedSet = new Set(used.map(normalize));
-    return OPTIONS.filter((o) => !usedSet.has(normalize(o.label)))
-      .map((o) => ({ o, idx: normalize(o.label).indexOf(q) }))
-      .filter((m) => m.idx >= 0)
-      .sort((a, b) => a.idx - b.idx || a.o.label.localeCompare(b.o.label))
-      .slice(0, 6)
-      .map((m) => m.o);
-  }, [text, used]);
-
-  const exact = OPTIONS.find((o) => normalize(o.label) === normalize(text));
-  const alreadyUsed = used.some((u) => normalize(u) === normalize(text));
-
-  const submit = (label?: string) => {
-    const value = label ?? exact?.label ?? matches[active]?.label;
-    if (!value || used.some((u) => normalize(u) === normalize(value))) return;
-    onGuess(value);
+  useEffect(() => {
     setText("");
-    setOpen(false);
-    setActive(0);
-    inputRef.current?.focus();
+    setFeedback(null);
+    if (finePointer()) input.current?.focus();
+  }, [roundKey]);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!isMeaningful(text)) {
+      setFeedback({ tone: "info", text: "Type what you think the sound is." });
+      setShake((s) => s + 1);
+      return;
+    }
+    const res = onGuess(text);
+    if (!res.ok) {
+      if (res.reason === "duplicate") {
+        setFeedback({ tone: "info", text: "You already tried that one." });
+        setShake((s) => s + 1);
+      }
+      return;
+    }
+    setText("");
+    count.current++;
+    if (res.verdict === "close") setFeedback({ tone: "close", text: pick(CLOSE_LINES, count.current) });
+    else if (res.verdict === "wrong") setFeedback({ tone: "wrong", text: pick(WRONG_LINES, count.current) });
+    else setFeedback(null);
+    if (res.verdict !== "correct") setShake((s) => s + 1);
   };
 
+  const tone = { close: "text-amber-300", wrong: "text-red-300", info: "text-zinc-400" };
+
   return (
-    <div className="relative">
-      {open && matches.length > 0 && (
-        <ul className="absolute bottom-full mb-2 w-full overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900 shadow-2xl" role="listbox">
-          {matches.map((m, i) => (
-            <li key={m.label} role="option" aria-selected={i === active}>
-              <button
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => submit(m.label)}
-                onMouseEnter={() => setActive(i)}
-                className={`flex w-full items-center justify-between px-4 py-2.5 text-left ${i === active ? "bg-zinc-800" : ""}`}
-              >
-                <span>{m.label}</span>
-                <span className="text-xs text-zinc-500">{m.category}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <p aria-live="polite" className={`h-5 text-center text-sm ${feedback ? tone[feedback.tone] : ""}`}>
+        {feedback?.text}
+      </p>
       <input
-        ref={inputRef}
+        key={shake}
+        ref={input}
         value={text}
         onChange={(e) => {
           setText(e.target.value);
-          setOpen(true);
-          setActive(0);
-        }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onKeyDown={(e) => {
-          if (e.key === "ArrowDown") {
-            e.preventDefault();
-            setActive((a) => Math.min(a + 1, matches.length - 1));
-          } else if (e.key === "ArrowUp") {
-            e.preventDefault();
-            setActive((a) => Math.max(a - 1, 0));
-          } else if (e.key === "Enter") {
-            e.preventDefault();
-            submit();
-          } else if (e.key === "Escape") {
-            setOpen(false);
-          }
+          if (feedback?.tone === "info") setFeedback(null);
         }}
         placeholder="What's that sound?"
         aria-label="Your guess"
         autoComplete="off"
-        className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3.5 text-base outline-none placeholder:text-zinc-500 focus:border-lime-400/70"
+        autoCorrect="off"
+        autoCapitalize="none"
+        spellCheck={false}
+        enterKeyHint="send"
+        maxLength={60}
+        autoFocus={shake > 0 || undefined}
+        className={`w-full rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3.5 text-base outline-none transition placeholder:text-zinc-500 focus:border-lime-400/70 ${shake ? "shake" : ""}`}
       />
-      {alreadyUsed && <p className="mt-1.5 text-xs text-zinc-500">You already tried that one.</p>}
-      <div className="mt-3 flex gap-3">
-        <button onClick={onSkip} className="flex-1 rounded-xl border border-zinc-800 py-3 font-medium text-zinc-300 transition hover:bg-zinc-900">
+      <div className="flex gap-3">
+        <button type="button" onClick={onSkip} className="flex-1 rounded-xl border border-zinc-800 py-3 font-medium text-zinc-300 transition hover:bg-zinc-900">
           {skipLabel}
         </button>
-        <button
-          onClick={() => submit()}
-          disabled={!exact && matches.length === 0}
-          className="flex-1 rounded-xl bg-zinc-100 py-3 font-semibold text-zinc-950 transition hover:bg-white disabled:opacity-40"
-        >
+        <button type="submit" disabled={!text.trim()} className="flex-1 rounded-xl bg-zinc-100 py-3 font-semibold text-zinc-950 transition hover:bg-white disabled:opacity-40">
           Guess
         </button>
       </div>
-    </div>
+    </form>
   );
 }
